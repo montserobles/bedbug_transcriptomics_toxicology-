@@ -1,0 +1,387 @@
+---
+title: "bedbug_plots_2026"
+author: "Montse Robles"
+date: "2026-02-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+setwd("/Users/roblesgi/Documents/roblesgi/bedbug/rnaseq/")
+outdir <- "Figures_2026"
+  library (tidyverse)
+  library(ggplot2)
+  library(ggrepel)
+  library(UpSetR)
+  library(openxlsx)
+```
+
+We're creating a new folder for the final plots 2026 so we can then edit them on Afinnity and photoshop
+
+```{r}
+load("deseq_objects_for_figures.RData")
+```
+
+Settings for the comparisons
+```{r}
+treatments_fig <- c("Carvacrol", "Deltamethrin", "PBO", "Thymol")
+padj_cut <- 0.05
+lfc_cut  <- 1
+top_n_labels <- 10
+```
+
+helpers for themes
+```{r}
+theme_clean <- function() {
+  theme_bw() +
+    theme(
+      panel.grid = element_blank(),
+      plot.title = element_blank(),
+      legend.position = "none"
+    )
+}
+```
+
+Volcano plot settings (themes)
+
+```{r}
+# VOLCANO HELPERS (pvalue on Y, highlight DEGs with padj)
+
+make_volcano_df <- function(res_obj) {
+  as.data.frame(res_obj) %>%
+    rownames_to_column("gene_id") %>%
+    filter(!is.na(log2FoldChange)) %>%
+    mutate(
+      pvalue_plot = if_else(is.na(pvalue), 1, pvalue),
+      pvalue_plot = pmax(pvalue_plot, 1e-300),  # avoid -Inf
+      padj_plot   = if_else(is.na(padj), 1, padj)
+    )
+}
+
+make_volcano_plot <- function(df, label = FALSE, top_n = 10, padj_cut = 0.05, lfc_cut = 1) {
+
+  df <- df %>%
+    mutate(sig = padj_plot < padj_cut & abs(log2FoldChange) >= lfc_cut)
+
+  top_genes <- df %>%
+    filter(sig) %>%
+    arrange(padj_plot) %>%          # pick labels using padj (not pvalue)
+    slice_head(n = top_n)
+
+  p <- ggplot(df, aes(x = log2FoldChange, y = -log10(pvalue_plot))) +
+    geom_point(aes(alpha = sig), color = "black", size = 2) +
+    scale_alpha_manual(values = c(`TRUE` = 0.9, `FALSE` = 0.25)) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +  # raw p=0.05 reference
+    geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = "dashed", color = "black") +
+    labs(x = "log2 fold change", y = "-log10 p-value") +
+    theme_clean()
+
+  if (label && nrow(top_genes) > 0) {
+    p <- p + geom_text_repel(
+      data = top_genes,
+      aes(label = gene_id),
+      color = "black",
+      size = 4,
+      max.overlaps = Inf
+    )
+  }
+
+  p
+}
+
+save_volcano_pair <- function(df, out_stub, top_n = 10, padj_cut = 0.05, lfc_cut = 1) {
+  p_lab <- make_volcano_plot(df, label = TRUE,  top_n = top_n, padj_cut = padj_cut, lfc_cut = lfc_cut)
+  p_nol <- make_volcano_plot(df, label = FALSE, top_n = top_n, padj_cut = padj_cut, lfc_cut = lfc_cut)
+
+  ggsave(paste0(out_stub, "_labels.png"),   p_lab, width = 10, height = 8)
+  ggsave(paste0(out_stub, "_labels.pdf"),   p_lab, width = 10, height = 8)
+  ggsave(paste0(out_stub, "_nolabels.png"), p_nol, width = 10, height = 8)
+  ggsave(paste0(out_stub, "_nolabels.pdf"), p_nol, width = 10, height = 8)
+}
+```
+
+UpSet helpers
+```{r}
+# UpSet HELPERS (original-style, reliable file output + render in HTML)
+
+deg_ids_from_res <- function(res_obj, padj_cut = 0.05, lfc_cut = NULL) {
+  df <- as.data.frame(res_obj) %>%
+    rownames_to_column("gene_id") %>%
+    mutate(padj_use = if_else(is.na(padj), 1, padj))
+
+  if (is.null(lfc_cut)) {
+    df %>% filter(padj_use < padj_cut) %>% pull(gene_id) %>% unique()
+  } else {
+    df %>% filter(padj_use < padj_cut, abs(log2FoldChange) >= lfc_cut) %>% pull(gene_id) %>% unique()
+  }
+}
+
+save_upset_pair <- function(list_input, out_stub, text_scale_labels = 3.2) {
+
+  sizes <- sapply(list_input, length)
+  message("UpSet input sizes for ", out_stub, ": ",
+          paste(names(sizes), sizes, sep="=", collapse="; "))
+
+  if (all(sizes == 0)) return(invisible(NULL))
+
+  upset_input <- UpSetR::fromList(lapply(list_input, function(x) unique(as.character(x))))
+
+  # show in knitted HTML
+  print(UpSetR::upset(
+    upset_input,
+    order.by = "freq",
+    keep.order = TRUE,
+    point.size = 3,
+    line.size = 1.5,
+    mainbar.y.label = "",
+    sets.x.label = "",
+    text.scale = text_scale_labels
+  ))
+
+  # labeled (save)
+  grDevices::png(paste0(out_stub, "_labels.png"), width = 2000, height = 1400, res = 200)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  print(UpSetR::upset(
+    upset_input,
+    order.by = "freq",
+    keep.order = TRUE,
+    point.size = 3,
+    line.size = 1.5,
+    mainbar.y.label = "",
+    sets.x.label = "",
+    text.scale = text_scale_labels
+  ))
+
+  grDevices::dev.off()
+  on.exit(NULL, add = FALSE)
+
+  # no-labels (save)
+  grDevices::png(paste0(out_stub, "_nolabels.png"), width = 2000, height = 1400, res = 200)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  print(UpSetR::upset(
+    upset_input,
+    order.by = "freq",
+    keep.order = TRUE,
+    point.size = 3,
+    line.size = 1.5,
+    mainbar.y.label = "",
+    sets.x.label = "",
+    text.scale = 0
+  ))
+
+  grDevices::dev.off()
+  on.exit(NULL, add = FALSE)
+
+  invisible(upset_input)
+}
+```
+
+excel file with DEGs: helpers only
+```{r}
+res_to_table <- function(res_obj, comparison_name, padj_cut = 0.05, lfc_cut = 1) {
+  as.data.frame(res_obj) %>%
+    rownames_to_column("gene_id") %>%
+    mutate(
+      comparison = comparison_name,
+      padj_use = if_else(is.na(padj), 1, padj),
+      sig_padj = padj_use < padj_cut,
+      sig_padj_lfc = padj_use < padj_cut & abs(log2FoldChange) >= lfc_cut
+    )
+}
+
+```
+
+Export and print plots baseline: controls
+```{r}
+# 1) Control-only: Harlan Control vs Knoxville Control
+df_ctrl <- make_volcano_df(deRes.controls.harlan_vs_knoxville)
+
+save_volcano_pair(
+  df_ctrl,
+  file.path(outdir, "volcano_Harlan_vs_Knoxville_Control"),
+  top_n = top_n_labels, padj_cut = padj_cut, lfc_cut = lfc_cut
+)
+
+```
+
+Export and print plots baseline: Deltamethrin
+
+```{r}
+# 2) Deltamethrin-only: Harlan Deltamethrin vs Knoxville Deltamethrin
+df_delHK <- make_volcano_df(deRes.deltamethrin.harlan_vs_knoxville)
+
+save_volcano_pair(
+  df_delHK,
+  file.path(outdir, "volcano_Harlan_vs_Knoxville_Deltamethrin"),
+  top_n = top_n_labels, padj_cut = padj_cut, lfc_cut = lfc_cut
+)
+
+```
+
+Export: Harlan control vs. all treatments
+
+```{r}
+# 3) Harlan: Control vs Treatments (UpSet all + 1 volcano per treatment)
+upset_harlan_list <- list()
+for (trt in treatments_fig) {
+  res_obj <- get(paste0("deRes.", trt, ".harlan"))
+  upset_harlan_list[[trt]] <- deg_ids_from_res(
+    res_obj,
+    padj_cut = padj_cut,
+    lfc_cut  = lfc_cut   #(padj + |log2FC|>=1)
+  )
+}
+message("Harlan DEG counts (padj<0.05 & |LFC|>=1): ",
+        paste(names(upset_harlan_list), sapply(upset_harlan_list, length), collapse = "; "))
+save_upset_pair(upset_harlan_list, file.path(outdir, "upSet_Harlan_Control_vs_Treatments"))
+
+
+for (trt in treatments_fig) {
+  dfH <- make_volcano_df(get(paste0("deRes.", trt, ".harlan")))
+  save_volcano_pair(
+    dfH,
+    file.path(outdir, paste0("volcano_Harlan_Control_vs_", trt)),
+    top_n = top_n_labels, padj_cut = padj_cut, lfc_cut = lfc_cut
+  )
+}
+
+```
+
+
+Export: Knoxville control vs. all treatments 
+```{r}
+# 4) Knoxville: Control vs Treatments (UpSet all + 1 volcano per treatment)
+
+upset_knox_list <- list()
+for (trt in treatments_fig) {
+  res_obj <- get(paste0("deRes.", trt, ".knoxville"))
+  upset_knox_list[[trt]] <- deg_ids_from_res(
+    res_obj,
+    padj_cut = padj_cut,
+    lfc_cut  = lfc_cut   #(padj + |log2FC|>=1)
+  )
+}
+message("Knoxville DEG counts (padj<0.05 & |LFC|>=1): ",
+        paste(names(upset_knox_list), sapply(upset_knox_list, length), collapse = "; "))
+save_upset_pair(upset_knox_list, file.path(outdir, "upSet_Knoxville_Control_vs_Treatments"))
+
+
+for (trt in treatments_fig) {
+  dfK <- make_volcano_df(get(paste0("deRes.", trt, ".knoxville")))
+  save_volcano_pair(
+    dfK,
+    file.path(outdir, paste0("volcano_Knoxville_Control_vs_", trt)),
+    top_n = top_n_labels, padj_cut = padj_cut, lfc_cut = lfc_cut
+  )
+}
+```
+
+Export .csv files with DEGs
+```{r}
+# 5) EXPORTS: ALL GENES + DEGs across ALL comparisons
+tables_all <- list()
+
+# Control H vs K
+tables_all[["Harlan_Control_vs_Knoxville_Control"]] <-
+  res_to_table(deRes.controls.harlan_vs_knoxville, "Harlan_Control_vs_Knoxville_Control",
+               padj_cut = padj_cut, lfc_cut = lfc_cut)
+
+# Deltamethrin-only H vs K
+tables_all[["Harlan_Deltamethrin_vs_Knoxville_Deltamethrin"]] <-
+  res_to_table(deRes.deltamethrin.harlan_vs_knoxville, "Harlan_Deltamethrin_vs_Knoxville_Deltamethrin",
+               padj_cut = padj_cut, lfc_cut = lfc_cut)
+
+# Harlan Control vs treatments
+for (trt in treatments_fig) {
+  tables_all[[paste0("Harlan_Control_vs_", trt)]] <-
+    res_to_table(get(paste0("deRes.", trt, ".harlan")),
+                 paste0("Harlan_Control_vs_", trt),
+                 padj_cut = padj_cut, lfc_cut = lfc_cut)
+}
+
+# Knoxville Control vs treatments
+for (trt in treatments_fig) {
+  tables_all[[paste0("Knoxville_Control_vs_", trt)]] <-
+    res_to_table(get(paste0("deRes.", trt, ".knoxville")),
+                 paste0("Knoxville_Control_vs_", trt),
+                 padj_cut = padj_cut, lfc_cut = lfc_cut)
+}
+
+all_genes_all_comparisons <- dplyr::bind_rows(tables_all)
+
+write.csv(all_genes_all_comparisons, file.path(outdir, "ALL_genes_all_comparisons.csv"), row.names = FALSE)
+openxlsx::write.xlsx(all_genes_all_comparisons, file.path(outdir, "ALL_genes_all_comparisons.xlsx"), rowNames = FALSE)
+
+degs_padj <- all_genes_all_comparisons %>% dplyr::filter(sig_padj)
+write.csv(degs_padj, file.path(outdir, "DEGs_padj0.05_all_comparisons.csv"), row.names = FALSE)
+openxlsx::write.xlsx(degs_padj, file.path(outdir, "DEGs_padj0.05_all_comparisons.xlsx"), rowNames = FALSE)
+
+degs_padj_lfc <- all_genes_all_comparisons %>% dplyr::filter(sig_padj_lfc)
+write.csv(degs_padj_lfc, file.path(outdir, "DEGs_padj0.05_LFC1_all_comparisons.csv"), row.names = FALSE)
+openxlsx::write.xlsx(degs_padj_lfc, file.path(outdir, "DEGs_padj0.05_LFC1_all_comparisons.xlsx"), rowNames = FALSE)
+
+message("DONE: Plots + UpSets + exports saved to: ", outdir)
+```
+```{r}
+count_degs <- function(res_obj, padj_cut=0.05, p_cut=0.05, lfc_cut=1) {
+  df <- as.data.frame(res_obj) %>%
+    tibble::rownames_to_column("gene_id") %>%
+    dplyr::mutate(
+      padj_use = dplyr::if_else(is.na(padj), 1, padj),
+      p_use    = dplyr::if_else(is.na(pvalue), 1, pvalue)
+    ) %>%
+    dplyr::filter(!is.na(log2FoldChange))
+
+  c(
+    padj_only      = sum(df$padj_use < padj_cut),
+    padj_lfc       = sum(df$padj_use < padj_cut & abs(df$log2FoldChange) >= lfc_cut),
+    pvalue_only    = sum(df$p_use < p_cut),
+    pvalue_lfc     = sum(df$p_use < p_cut & abs(df$log2FoldChange) >= lfc_cut)
+  )
+}
+
+get_counts_for_strain <- function(strain) {
+  out <- lapply(treatments_fig, function(trt) {
+    res_obj <- get(paste0("deRes.", trt, ".", strain))
+    count_degs(res_obj, padj_cut=padj_cut, p_cut=0.05, lfc_cut=lfc_cut)
+  })
+  out <- do.call(rbind, out)
+  rownames(out) <- treatments_fig
+  out
+}
+
+cat("\nHarlan counts:\n")
+print(get_counts_for_strain("harlan"))
+
+cat("\nKnoxville counts:\n")
+print(get_counts_for_strain("knoxville"))
+```
+
+```{r}
+resK_del <- get("deRes.Deltamethrin.knoxville")
+dfK_del <- as.data.frame(resK_del) %>%
+  tibble::rownames_to_column("gene_id") %>%
+  dplyr::mutate(padj_use = dplyr::if_else(is.na(padj), 1, padj)) %>%
+  dplyr::arrange(padj_use)
+
+head(dfK_del[, c("gene_id","log2FoldChange","pvalue","padj_use")], 15)
+```
+
+curious about acanthoscurrin-gene
+```{r}
+subset(all_genes_all_comparisons,
+       gene_id %in% c("gene-LOC106664987", "gene-LOC106669600")) %>%
+  dplyr::select(comparison, log2FoldChange, pvalue, padj_use, sig_padj)
+```
+
+```{r}
+colnames(all_genes_all_comparisons)
+```
+```{r}
+all_genes_all_comparisons %>%
+  dplyr::filter(gene_id %in% c("gene-LOC106664987", "gene-LOC106669600")) %>%
+  dplyr::select(gene_id, comparison, log2FoldChange, pvalue, padj_use, sig_padj, sig_padj_lfc) %>%
+  dplyr::arrange(gene_id, comparison)
+```
+
