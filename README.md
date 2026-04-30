@@ -1,2 +1,2 @@
-# bedbug_transcriptomics_toxicology-
+# bedbug transcriptomics toxicology
 transcriptional responses in pyrethroid-susceptible and resistant bed bug strains following sublethal chemical exposure.
