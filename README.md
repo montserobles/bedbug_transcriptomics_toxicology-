@@ -28,4 +28,4 @@ Analyses include:
 - UpSetR
 
 ## Data Availability
-Raw RNA-seq data are available through NCBI SRA under BioProject: [pending]
+Raw RNA-seq data are available through NCBI SRA under BioProject:  PRJNA1460368
